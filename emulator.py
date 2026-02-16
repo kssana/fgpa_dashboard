@@ -2,86 +2,106 @@ import asyncio
 import requests
 import random
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 
-URL = "http://127.0.0.1:8000/ingest"
+URL = "https://fgpa-dashboard.onrender.com/ingest"
 
 sequence_number = 0
-flow_base = 500
-pressure_base = 1500
-vibration_freq = 5
+t = 0.0
 
-LOW_THRESHOLD = 10
-HIGH_THRESHOLD = 50
+# Baselines (industrial-style)
+FLOW_BASE = 500        # GPM
+PRESSURE_BASE = 1500   # PSI
+VIB_FREQ = 5           # Hz
+
+LOW_MAD = 10
+HIGH_MAD = 50
 
 window = []
 
 
 def compute_mad(signal):
-    mean_val = np.mean(signal)
-    return np.mean(np.abs(signal - mean_val))
+    mean = np.mean(signal)
+    return np.mean(np.abs(signal - mean))
 
 
 async def run_emulator():
-    global sequence_number
-    t = 0
+    global sequence_number, t
 
     while True:
         sequence_number += 1
         t += 0.5
 
-        # --- Flow ---
-        flow = flow_base + random.uniform(-5, 5)
+        # --- Physical signals ---
+        flow = FLOW_BASE + random.gauss(0, 3)
+        pressure = PRESSURE_BASE + random.gauss(0, 8)
+        vibration = 100 + 30 * np.sin(2 * np.pi * VIB_FREQ * t) + random.gauss(0, 5)
 
-        # Inject fault after 20 seconds
+        # --- Fault injection (after 20s) ---
+        system_state = "NORMAL"
         if t > 20:
             flow += 200
-
-        # --- Pressure ---
-        pressure = pressure_base + random.uniform(-10, 10)
-        if t > 20:
             pressure -= 300
+            vibration *= 1.5
+            system_state = "FAULT"
 
-        # --- Vibration ---
-        vibration = 100 + 30 * np.sin(2 * np.pi * vibration_freq * t)
-
-        # --- MAD Calculation ---
+        # --- MAD-based analysis ---
         window.append(flow)
         if len(window) > 20:
             window.pop(0)
 
         mad = compute_mad(window)
 
-        # --- Compression Decision ---
-        if mad < LOW_THRESHOLD:
+        # --- Compression decision ---
+        if mad < LOW_MAD:
             compression_mode = "LOSSLESS"
-        elif mad < HIGH_THRESHOLD:
+            compressed_bits = 8
+        elif mad < HIGH_MAD:
             compression_mode = "LOSSY"
+            compressed_bits = 4
         else:
             compression_mode = "RAW"
+            compressed_bits = 16
 
-        # --- Build Packet ---
-        data = {
-            "timestamp": str(datetime.utcnow()),
+        # --- Compression ratio (real, not random) ---
+        raw_bits = 16
+        compression_ratio = raw_bits / compressed_bits
+
+        # --- Latency model (industry-style) ---
+        compression_delay = {
+            "RAW": 2,
+            "LOSSLESS": 6,
+            "LOSSY": 10
+        }[compression_mode]
+
+        encryption_delay = 5     # AES hardware equivalent
+        network_jitter = random.uniform(5, 15)
+
+        latency = compression_delay + encryption_delay + network_jitter
+
+        # --- Build packet ---
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "sequence_number": sequence_number,
             "sensor_values": {
-                "flow": int(flow * 10),
-                "pressure": int(pressure * 20),
-                "vibration": int(vibration * 10)
+                "flow": flow,
+                "pressure": pressure,
+                "vibration": vibration
             },
+            "system_state": system_state,
             "compression_mode": compression_mode,
-            "quantization_level": 4,
-            "compression_ratio": round(random.uniform(1.5, 3.5), 2),
-            "latency": round(random.uniform(5, 30), 2),
+            "quantization_level": compressed_bits,
+            "compression_ratio": round(compression_ratio, 2),
+            "latency": round(latency, 2),
             "encryption_mode": "AES-128 (Simulated)",
             "packet_status": "OK"
         }
 
         try:
-            requests.post(URL, json=data)
-            print(f"Sent packet {sequence_number} | Mode: {compression_mode}")
+            requests.post(URL, json=payload, timeout=2)
+            print(f"Pkt {sequence_number} | {system_state} | {compression_mode}")
         except:
-            print("Server not running")
+            print("Backend unreachable")
 
         await asyncio.sleep(0.5)
 

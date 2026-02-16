@@ -5,7 +5,6 @@ from models import Telemetry
 
 app = FastAPI()
 
-# Allow frontend to connect later
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,7 +13,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Store connected WebSocket clients
 connected_clients: List[WebSocket] = []
 
 
@@ -25,11 +23,11 @@ def root():
 
 @app.post("/ingest")
 async def ingest(data: Telemetry):
-    # Broadcast received telemetry to all connected WebSocket clients
+    # Broadcast validated telemetry
     for client in connected_clients:
         await client.send_json(data.dict())
 
-    return {"status": "Telemetry received"}
+    return {"status": "OK"}
 
 
 @app.websocket("/ws/telemetry")
@@ -39,6 +37,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            await websocket.receive_text()  # keep connection alive
+            await websocket.receive_text()
     except:
         connected_clients.remove(websocket)
